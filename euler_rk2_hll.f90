@@ -15,29 +15,29 @@ module globals
   real, parameter :: gamma=1.4
   !   This is a vector that contains u(x)
   real :: u(3,0:nx+1), prim(3,0:nx+1)
-  !  
+  !
 end module globals
 !=======================================================================
 !   main program
-program euler_lax
+program euler_rk2_hll
   use globals
   implicit none
   ! declaration of some variables needed by the main program
   real           :: time, dt              !  t, $\Delta t$
-  real, parameter :: tmax= .2             ! maximumn integration time
+  real, parameter :: tmax= .3             ! maximumn integration time
   real, parameter :: dtprint=0.01         ! interval between outputs
   real            :: tprint               ! time of next output
   integer         :: itprint              ! number of current output
 
   ! This subroutine generates the initial conditions
   call initconds(time, tprint, itprint)
-  
+
   !   main loop, iterate until maximum time is reached
   do while (time.lt.tmax)
 
     ! updates the primitives
     call u2prim(nx,gamma,u,prim)
-    
+
     ! output at tprint intervals
     if(time.ge.tprint) then
       write(*,*) time,tmax,dt
@@ -50,14 +50,14 @@ program euler_lax
     call timestep(dt)
     !
     ! Integrate u fom t to t+dt
-    call tstep(dt,time) 
+    call tstep_rk2(dt,time)
     ! time counter increases
     time=time+dt
 
   end do
 
   stop
-end program euler_lax
+end program euler_rk2_hll
 !=======================================================================
 ! generates initial condition
 subroutine initconds(time, tprint, itprint)
@@ -88,12 +88,12 @@ subroutine initconds(time, tprint, itprint)
       u(3,i)=1.1/2./(gamma-1.)
     end if
   end do
-  
+
   !   reset the counters and time to 0
   time=0.
   tprint=0.
   itprint=0
-  
+
   return
 end subroutine initconds
 !=======================================================================
@@ -114,7 +114,7 @@ subroutine u2prim(nx,gamma,u,prim)
     prim(3,i) = (u(3,i)-0.5*prim(1,i)*prim(2,i)**2)*(gamma-1.)
 
   end do
-  
+
   return
 end subroutine u2prim
 !=======================================================================
@@ -127,14 +127,14 @@ subroutine output(itprint)
   integer :: i
   real :: rho,vx,P
   ! open output file
-  write(file1,'(a,i2.2,a)') 'euler_god-',itprint,'.dat'
+  write(file1,'(a,i2.2,a)') 'euler_god_hll-',itprint,'.dat'
   open(unit=10,file=file1,status='unknown')
 
   ! writes x and rho, u(=vx) and P
   do i=1,nx
     write(10,*) float(i)*dx,prim(:,i)
   end do
-  
+
   ! closes output file
   close(10)
 
@@ -171,7 +171,8 @@ subroutine tstep(dt,time)
   integer :: i
 
   !  obtain the fluxes
-  call rusanov_fluxes(nx,gamma,prim,f)
+!   call rusanov_fluxes(nx,gamma,prim,f)
+  call hll_fluxes(nx,gamma,prim,f)
 
   !   Here is the upwind Godunov method
   dtx=dt/dx
@@ -187,6 +188,93 @@ subroutine tstep(dt,time)
 
   return
 end subroutine tstep
+!=======================================================================
+! integration from t to t+dt with the method of Runge-Kutta
+subroutine tstep_rk2(dt,time)
+  use globals
+  implicit none
+  real, intent(in) :: dt, time
+  real :: up(3,0:nx+1), u1(3,0:nx+1), f(3,0:nx+1)
+  real :: dtx
+  integer :: i
+
+!== 1st STEP OF RK2 ===
+!
+  ! updates the primitives
+  call u2prim(nx,gamma,u,prim)
+
+  !  obtain the fluxes
+  call hll_fluxes(nx,gamma,prim,f)
+
+  !   Here is the upwind Godunov method
+  dtx=dt/dx
+  do i=1,nx
+    up(:,i)=u(:,i)-dtx*(f(:,i)-f(:,i-1))
+  end do
+
+  !   Boundary conditions to the U^n+1
+  call boundaries(nx,up)
+
+  ! copy the up to the u1
+  u1(:,:)=up(:,:)
+
+!== 2nd STEP OF RK2 ===
+!
+  ! updates the primitives for the intermediate integration step
+  call u2prim(nx,gamma,u1,prim)
+
+  !  obtain the fluxes
+  call hll_fluxes(nx,gamma,prim,f)
+
+  !   Here is the upwind Godunov method
+  do i=1,nx
+    up(:,i)=0.5*(u(:,i)+u1(:,i))-0.5*dtx*(f(:,i)-f(:,i-1))
+  end do
+
+  ! copy the up to the u
+  u(:,:)=up(:,:)
+
+  return
+end subroutine tstep_rk2
+
+!=======================================================================
+!  computes the HLL fluxes on the entire domain
+subroutine hll_fluxes(nx,gamma,prim,f)
+  implicit none
+  integer, intent(in) :: nx
+  real,    intent(in) :: gamma
+  real,    intent(in) :: prim(3,0:nx+1)
+  real,    intent(out):: f(3,0:nx+1)
+  integer :: i
+  real :: priml(3), primr(3), ff(3), deltaL(3), deltaR(3), deltaMM(3,0:nx+1)
+
+  do i = 1, nx
+    !   we reconstruct the Left and Right states using minmod limited linear
+    !   interpolation
+    !
+    deltaL(:) = prim(:,i  ) - prim(:,i-1)
+    deltaR(:) = prim(:,i+1) - prim(:,i  )
+
+    deltaMM(:,i) = (sign(0.5,deltaL(:)) + sign(0.5,deltaR(:))) &
+                  * min(abs(deltaL(:)), abs(deltaR(:)))
+  end do
+  deltaMM(:,   0) = 0.0
+  deltaMM(:,nx+1) = 0.0
+
+  do i=0,nx
+
+    !   these are the Left and Right states that enter
+    !   the Riemann problem
+    ! Ver pagina 7 de presentacion part3.pdf
+    primL(:)= prim(:,i  ) + 0.5 * deltaMM(:,i  )
+    primR(:)= prim(:,i+1) - 0.5 * deltaMM(:,i+1)
+
+    call prim2hll(gamma, primL, primR, ff)
+    f(:,i)=ff(:)
+
+  end do
+
+end subroutine hll_fluxes
 
 !=======================================================================
 !  computes the Rusanov fluxes on the entire domain
@@ -200,15 +288,15 @@ subroutine rusanov_fluxes(nx,gamma,prim,f)
   real :: priml(3), primr(3), ff(3)
 
   do i=0,nx
-    
+
     !   these are the Left and Right states that enter
     !   the Riemann problem
     primL(:)= prim(:,i  )
     primR(:)= prim(:,i+1)
-    
+
     call prim2rus(gamma, primL, primR, ff)
     f(:,i)=ff(:)
-    
+
   end do
 
 end subroutine rusanov_fluxes
@@ -230,21 +318,53 @@ subroutine prim2rus(gamma,primL,primR,ff)
   call prim2u(gamma, primR, uR)
 
   ff(:)=0.5*( fl(:)+fr(:) -lambda*( ur(:)-ul(:) )  )
-  
-      
+
+
 return
 end subroutine prim2rus
+!=======================================================================
+! Obtain the HLL fluxes
+subroutine prim2hll(gamma,primL,primR,ff)
+  implicit none
+  real, intent(in) :: gamma, primL(3), primR(3)
+  real, intent(out):: ff(3)
+  real :: fL(3), fR(3),ur(3), ul(3)
+  real :: lambdaL, lambdaR, sL, sR
+
+  lambdaL = sqrt(gamma*primL(3)/primL(1))
+  lambdaR = sqrt(gamma*primR(3)/primR(1))
+  sL = min(primL(2) - lambdaL, primR(2) - lambdaR)
+  sR = max(primL(2) + lambdaL, primR(2) + lambdaR)
+
+  call eulerfluxes(gamma,primL,fL)
+  call eulerfluxes(gamma,primR,fR)
+  call prim2u(gamma, primL, uL)
+  call prim2u(gamma, primR, uR)
+
+  if (sL >= 0.0) then
+    ! Supersonic, only one side flux
+    ff(:) = fL(:)
+  else if (sR <= 0.0) then
+    ! Supersonic, only one side flux
+    ff(:) = fR(:)
+  else
+    ! Average weighting the fluxes
+    ff(:) = (sR * fL(:) - sL * fR(:) + sR * sL * ( uR(:) - uL(:) )) / (sR - sL)
+  endif
+
+return
+end subroutine prim2hll
 !=======================================================================
 !  computes the euler fluxes, one cell
 subroutine eulerfluxes(gamma,pp,ff)
   implicit none
   real, intent(in) :: gamma, pp(3)
   real, intent(out):: ff(3)
-  
+
   ff(1)=pp(1)*pp(2)
   ff(2)=pp(1)*pp(2)**2+pp(3)
   ff(3)=pp(2)*(0.5*pp(1)*pp(2)**2+gamma*pp(3)/(gamma-1.) )
-  
+
   return
 end subroutine eulerfluxes
 

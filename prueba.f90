@@ -3,8 +3,9 @@ program prueba
     real :: z(3,0:10)
     real :: otro(0:10)
     real :: velocities(0:10)
-    integer :: i, minimum_i(0)
+    integer :: i, minimum_i(1)
     real :: dt
+    real :: prim(3)
     i = 0
     
     do while (i.le.10)
@@ -33,7 +34,9 @@ program prueba
 
     velocities = abs(u(2, 0:nx+1) / u(1, 0:nx+1))
     minimum_i = minloc(velocities)
-    dt = velocities(minimum_i(0)-1)
-    print*, dt
+    dt = velocities(minimum_i(1)-1)
+
+    prim(:) = 10
+    print*, prim
 
 end program prueba
